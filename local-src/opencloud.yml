@@ -1,0 +1,19 @@
+---
+# Overlay: build the opencloud service from the local checkouts next to this repo
+#   ../opencloud  (backend)   ../web  (frontend, embedded into the binary)
+# instead of pulling opencloudeu/opencloud-rolling from Docker Hub.
+#
+# Enable it by adding "local-src/opencloud.yml" to COMPOSE_FILE in .env, then:
+#   docker compose up -d --build
+#
+# Note: relative paths here resolve against the project directory (opencloud-compose/),
+# not against this file's folder.
+services:
+  opencloud:
+    image: opencloud-local:dev
+    build:
+      context: ../opencloud
+      # resolved relative to the build context
+      dockerfile: ../opencloud-compose/local-src/opencloud.Dockerfile
+      additional_contexts:
+        web-src: ../web
