@@ -1,0 +1,13 @@
+---
+services:
+  swagger-ui:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${COMPOSE_PROJECT_NAME}_opencloud-net"
+      - "traefik.http.routers.swagger-ui.entrypoints=https"
+      # same host as OpenCloud; the longer rule wins over the opencloud router
+      - "traefik.http.routers.swagger-ui.rule=Host(`${OC_DOMAIN:-cloud.opencloud.test}`) && PathPrefix(`/swagger`)"
+      - "traefik.http.routers.swagger-ui.${TRAEFIK_SERVICES_TLS_CONFIG}"
+      - "traefik.http.routers.swagger-ui.service=swagger-ui"
+      - "traefik.http.routers.swagger-ui.middlewares=hsts-header"
+      - "traefik.http.services.swagger-ui.loadbalancer.server.port=8080"

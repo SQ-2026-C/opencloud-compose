@@ -1,0 +1,35 @@
+---
+# Swagger UI for the Libre Graph API (the OpenCloud REST API under /graph).
+#
+# Enable it by adding "swagger/swagger-ui.yml" and "traefik/swagger-ui.yml" to COMPOSE_FILE,
+# then open https://${OC_DOMAIN}/swagger/
+#
+# The UI is served on the OpenCloud domain itself (same origin), so "Try it out" calls
+# https://${OC_DOMAIN}/graph/... without CORS issues. Authenticate via "Authorize" -> bearerAuth
+# with an access token (e.g. copy it from the Authorization header of a /graph request in the
+# browser dev tools while logged into OpenCloud web).
+#
+# On start the spec is downloaded and its server URL (https://localhost:9200/graph) is rewritten
+# to the relative "/graph" so requests go to this deployment.
+services:
+  swagger-ui:
+    # renovate: depName=swaggerapi/swagger-ui
+    image: ${SWAGGER_UI_DOCKER_IMAGE:-swaggerapi/swagger-ui}:${SWAGGER_UI_DOCKER_TAG:-v5.35.1}
+    networks:
+      opencloud-net:
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        wget -q -O /usr/share/nginx/html/libregraph.yaml "$$LIBREGRAPH_SPEC_URL"
+        sed -i 's#^\(  - url: \)https://localhost:9200/graph#\1/graph#' /usr/share/nginx/html/libregraph.yaml
+        exec /docker-entrypoint.sh nginx -g 'daemon off;'
+    environment:
+      LIBREGRAPH_SPEC_URL: ${LIBREGRAPH_SPEC_URL:-https://raw.githubusercontent.com/opencloud-eu/libre-graph-api/main/api/openapi-spec/v1.0.yaml}
+      BASE_URL: /swagger
+      URLS: '[{"url": "/swagger/libregraph.yaml", "name": "Libre Graph API"}]'
+      PERSIST_AUTHORIZATION: 'true'
+    logging:
+      driver: ${LOG_DRIVER:-local}
+    restart: always
