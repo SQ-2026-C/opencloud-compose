@@ -1,0 +1,26 @@
+---
+# Companion to split/split.yml when building OpenCloud from local sources
+# (local-src/opencloud.yml). Points the 5 extra components at the locally built image.
+# Each one gets the same build section; after the first build the rest are cache hits.
+#
+# COMPOSE_FILE order: ...;local-src/opencloud.yml;split/split.yml;split/local-src.yml
+
+x-oc-local-build: &oc-local-build
+  image: opencloud-local:dev
+  build:
+    context: ../opencloud
+    dockerfile: ../opencloud-compose/local-src/opencloud.Dockerfile
+    additional_contexts:
+      web-src: ../web
+
+services:
+  oc-nats:
+    <<: *oc-local-build
+  oc-identity:
+    <<: *oc-local-build
+  oc-core:
+    <<: *oc-local-build
+  oc-storage:
+    <<: *oc-local-build
+  oc-async:
+    <<: *oc-local-build

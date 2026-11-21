@@ -1,0 +1,215 @@
+---
+# Overlay: split the single OpenCloud container into 6 deployment components.
+#
+#   oc-nats      messaging backbone: NATS (service registry, event bus, KV stores)
+#   oc-identity  identity & user management: idm (LDAP), idp (OIDC), users, groups,
+#                auth-basic, auth-machine, auth-app, auth-service, auth-guest, graph
+#   oc-core      CS3/reva core: gateway, app-registry, app-provider, sharing, ocm, settings
+#   oc-storage   storage providers: storage-users, storage-system, storage-shares,
+#                storage-publiclink
+#   oc-async     event-driven workers: postprocessing, search, thumbnails, activitylog,
+#                clientlog, eventhistory, userlog (+ START_ADDITIONAL_SERVICES)
+#   opencloud    edge / API layer (the existing service, kept so Traefik labels still work):
+#                proxy, web, frontend, ocs, webdav, webfinger, sse
+#
+# How it works: every container runs the same image, but OC_RUN_SERVICES limits which
+# services its `opencloud server` runtime starts. Services find each other through the
+# NATS-based registry (MICRO_REGISTRY_ADDRESS) and bind to 0.0.0.0 so the registry
+# advertises the container IP instead of 127.0.0.1.
+#
+# idm's plain LDAP listener may only bind to loopback, so all LDAP clients
+# (users, groups, auth-basic, idp, graph) live in oc-identity together with idm.
+#
+# Enable it by appending "split/split.yml" to COMPOSE_FILE in .env (after docker-compose.yml
+# and traefik/opencloud.yml). When building from local sources, also append
+# "split/local-src.yml" after "local-src/opencloud.yml". See split/README.md.
+
+x-oc-image: &oc-image ${OC_DOCKER_IMAGE:-opencloudeu/opencloud-rolling}:${OC_DOCKER_TAG:-9.2.0}
+
+x-oc-env: &oc-env
+  # ---- copied from docker-compose.yml so every component gets the same settings ----
+  OC_URL: https://${OC_DOMAIN:-cloud.opencloud.test}${TRAEFIK_PORT_HTTPS:+:}${TRAEFIK_PORT_HTTPS:-}
+  OC_LOG_LEVEL: ${LOG_LEVEL:-info}
+  OC_LOG_COLOR: "${LOG_PRETTY:-false}"
+  OC_LOG_PRETTY: "${LOG_PRETTY:-false}"
+  PROXY_TLS: "false"
+  OC_INSECURE: "${INSECURE:-false}"
+  PROXY_ENABLE_BASIC_AUTH: "${PROXY_ENABLE_BASIC_AUTH:-false}"
+  IDM_CREATE_DEMO_USERS: "${DEMO_USERS:-false}"
+  IDM_ADMIN_PASSWORD: "${INITIAL_ADMIN_PASSWORD}"
+  NOTIFICATIONS_SMTP_HOST: "${SMTP_HOST}"
+  NOTIFICATIONS_SMTP_PORT: "${SMTP_PORT}"
+  NOTIFICATIONS_SMTP_SENDER: "${SMTP_SENDER:-OpenCloud Notifications <notifications@cloud.opencloud.test>}"
+  NOTIFICATIONS_SMTP_USERNAME: "${SMTP_USERNAME}"
+  NOTIFICATIONS_SMTP_PASSWORD: "${SMTP_PASSWORD}"
+  NOTIFICATIONS_SMTP_INSECURE: "${SMTP_INSECURE:-false}"
+  NOTIFICATIONS_SMTP_AUTHENTICATION: "${SMTP_AUTHENTICATION}"
+  NOTIFICATIONS_SMTP_ENCRYPTION: "${SMTP_TRANSPORT_ENCRYPTION:-none}"
+  FRONTEND_ARCHIVER_MAX_SIZE: "10000000000"
+  FRONTEND_CHECK_FOR_UPDATES: "${CHECK_FOR_UPDATES:-true}"
+  PROXY_CSP_CONFIG_FILE_LOCATION: /etc/opencloud/csp.yaml
+  OC_PASSWORD_POLICY_BANNED_PASSWORDS_LIST: banned-password-list.txt
+  OC_SHARING_PUBLIC_SHARE_MUST_HAVE_PASSWORD: "${OC_SHARING_PUBLIC_SHARE_MUST_HAVE_PASSWORD:-true}"
+  OC_SHARING_PUBLIC_WRITEABLE_SHARE_MUST_HAVE_PASSWORD: "${OC_SHARING_PUBLIC_WRITEABLE_SHARE_MUST_HAVE_PASSWORD:-false}"
+  OC_PASSWORD_POLICY_DISABLED: "${OC_PASSWORD_POLICY_DISABLED:-false}"
+  OC_PASSWORD_POLICY_MIN_CHARACTERS: "${OC_PASSWORD_POLICY_MIN_CHARACTERS:-8}"
+  OC_PASSWORD_POLICY_MIN_LOWERCASE_CHARACTERS: "${OC_PASSWORD_POLICY_MIN_LOWERCASE_CHARACTERS:-1}"
+  OC_PASSWORD_POLICY_MIN_UPPERCASE_CHARACTERS: "${OC_PASSWORD_POLICY_MIN_UPPERCASE_CHARACTERS:-1}"
+  OC_PASSWORD_POLICY_MIN_DIGITS: "${OC_PASSWORD_POLICY_MIN_DIGITS:-1}"
+  OC_PASSWORD_POLICY_MIN_SPECIAL_CHARACTERS: "${OC_PASSWORD_POLICY_MIN_SPECIAL_CHARACTERS:-1}"
+  OC_ENABLE_GUEST_LINKS: "${OC_ENABLE_GUEST_LINKS:-false}"
+  OC_DEFAULT_LANGUAGE: ${DEFAULT_LANGUAGE}
+  OC_GRPC_MAX_RECEIVED_MESSAGE_SIZE:
+
+  # ---- shared infrastructure: everything points at the oc-nats container ----
+  MICRO_REGISTRY: nats-js-kv
+  MICRO_REGISTRY_ADDRESS: oc-nats:9233
+  OC_EVENTS_ENDPOINT: oc-nats:9233
+  OC_CACHE_STORE_NODES: oc-nats:9233
+  OC_PERSISTENT_STORE_NODES: oc-nats:9233
+
+  # ---- cross-container URLs that default to localhost ----
+  STORAGE_USERS_DATA_SERVER_URL: http://oc-storage:9158/data
+  STORAGE_SYSTEM_DATA_SERVER_URL: http://oc-storage:9216/data
+  OCM_OCM_STORAGE_DATA_SERVER_URL: http://oc-core:9280/data
+  WEBDAV_THUMBNAILS_GENERATOR_URL: http://oc-async:9186
+  STORAGE_USERS_GATEWAY_GRPC_ADDR: oc-core:9142
+
+  # ---- bind addresses: listen on all interfaces so the registry advertises the
+  #      container IP. A variable only takes effect in the container running that service.
+  # oc-core
+  GATEWAY_GRPC_ADDR: 0.0.0.0:9142
+  APP_REGISTRY_GRPC_ADDR: 0.0.0.0:9242
+  APP_PROVIDER_GRPC_ADDR: 0.0.0.0:9164
+  SHARING_GRPC_ADDR: 0.0.0.0:9150
+  OCM_GRPC_ADDR: 0.0.0.0:9282
+  OCM_HTTP_ADDR: 0.0.0.0:9280
+  SETTINGS_GRPC_ADDR: 0.0.0.0:9191
+  SETTINGS_HTTP_ADDR: 0.0.0.0:9190
+  # oc-identity
+  IDP_HTTP_ADDR: 0.0.0.0:9130
+  USERS_GRPC_ADDR: 0.0.0.0:9144
+  GROUPS_GRPC_ADDR: 0.0.0.0:9160
+  AUTH_BASIC_GRPC_ADDR: 0.0.0.0:9146
+  AUTH_MACHINE_GRPC_ADDR: 0.0.0.0:9166
+  AUTH_SERVICE_GRPC_ADDR: 0.0.0.0:9199
+  AUTH_APP_GRPC_ADDR: 0.0.0.0:9246
+  AUTH_APP_HTTP_ADDR: 0.0.0.0:9247
+  AUTH_GUEST_GRPC_ADDR: 0.0.0.0:9268
+  AUTH_GUEST_HTTP_ADDR: 0.0.0.0:9266
+  GRAPH_HTTP_ADDR: 0.0.0.0:9120
+  # oc-storage
+  STORAGE_USERS_GRPC_ADDR: 0.0.0.0:9157
+  STORAGE_USERS_HTTP_ADDR: 0.0.0.0:9158
+  STORAGE_SYSTEM_GRPC_ADDR: 0.0.0.0:9215
+  STORAGE_SYSTEM_HTTP_ADDR: 0.0.0.0:9216
+  STORAGE_SHARES_GRPC_ADDR: 0.0.0.0:9154
+  STORAGE_PUBLICLINK_GRPC_ADDR: 0.0.0.0:9178
+  # oc-async
+  SEARCH_GRPC_ADDR: 0.0.0.0:9220
+  THUMBNAILS_HTTP_ADDR: 0.0.0.0:9186
+  ACTIVITYLOG_HTTP_ADDR: 0.0.0.0:9195
+  EVENTHISTORY_GRPC_ADDR: 0.0.0.0:9274
+  USERLOG_HTTP_ADDR: 0.0.0.0:9210
+  INVITATIONS_HTTP_ADDR: 0.0.0.0:9265
+  POLICIES_GRPC_ADDR: 0.0.0.0:9125
+  # edge (opencloud)
+  WEB_HTTP_ADDR: 0.0.0.0:9100
+  FRONTEND_HTTP_ADDR: 0.0.0.0:9140
+  OCS_HTTP_ADDR: 0.0.0.0:9110
+  WEBDAV_HTTP_ADDR: 0.0.0.0:9115
+  WEBFINGER_HTTP_ADDR: 0.0.0.0:9275
+  SSE_HTTP_ADDR: 0.0.0.0:9135
+
+x-oc-volumes: &oc-volumes
+  - ./config/opencloud/csp.yaml:/etc/opencloud/csp.yaml
+  - ./config/opencloud/apps.yaml:/etc/opencloud/apps.yaml
+  - ./config/opencloud/banned-password-list.txt:/etc/opencloud/banned-password-list.txt
+  - ${OC_CONFIG_DIR:-opencloud-config}:/etc/opencloud
+  - ${OC_DATA_DIR:-opencloud-data}:/var/lib/opencloud
+
+x-oc-component: &oc-component
+  image: *oc-image
+  user: ${OC_CONTAINER_UID_GID:-1000:1000}
+  networks:
+    opencloud-net:
+  entrypoint:
+    - /bin/sh
+  volumes: *oc-volumes
+  logging:
+    driver: ${LOG_DRIVER:-local}
+  restart: always
+  depends_on:
+    oc-nats:
+      condition: service_healthy
+
+services:
+  # ---------------------------------------------------------------- 1. messaging
+  oc-nats:
+    <<: *oc-component
+    # init writes /etc/opencloud/opencloud.yaml (shared secrets) once; it fails on later
+    # runs because the file exists, which is fine. Only this container runs it.
+    command: ["-c", "opencloud init || true; opencloud nats server"]
+    depends_on: {}
+    environment:
+      <<: *oc-env
+      NATS_NATS_HOST: 0.0.0.0
+      NATS_NATS_PORT: "9233"
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /etc/opencloud/opencloud.yaml && curl -fsS http://127.0.0.1:9234/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  # ---------------------------------------------------------------- 2. identity
+  oc-identity:
+    <<: *oc-component
+    command: ["-c", "opencloud server"]
+    environment:
+      <<: *oc-env
+      OC_RUN_SERVICES: idm,idp,users,groups,auth-basic,auth-machine,auth-app,auth-service,auth-guest,graph
+
+  # ---------------------------------------------------------------- 3. core
+  oc-core:
+    <<: *oc-component
+    command: ["-c", "opencloud server"]
+    environment:
+      <<: *oc-env
+      OC_RUN_SERVICES: gateway,app-registry,app-provider,sharing,ocm,settings
+
+  # ---------------------------------------------------------------- 4. storage
+  oc-storage:
+    <<: *oc-component
+    command: ["-c", "opencloud server"]
+    environment:
+      <<: *oc-env
+      OC_RUN_SERVICES: storage-users,storage-system,storage-shares,storage-publiclink
+
+  # ---------------------------------------------------------------- 5. async workers
+  oc-async:
+    <<: *oc-component
+    command: ["-c", "opencloud server"]
+    environment:
+      <<: *oc-env
+      # optional services from START_ADDITIONAL_SERVICES (e.g. notifications,antivirus) run here
+      OC_RUN_SERVICES: postprocessing,search,thumbnails,activitylog,clientlog,eventhistory,userlog${START_ADDITIONAL_SERVICES:+,}${START_ADDITIONAL_SERVICES:-}
+
+  # ---------------------------------------------------------------- 6. edge / API
+  # Reuses the existing "opencloud" service so traefik/opencloud.yml keeps routing to :9200.
+  opencloud:
+    command: ["-c", "opencloud server"]
+    depends_on:
+      oc-nats:
+        condition: service_healthy
+      oc-identity:
+        condition: service_started
+      oc-core:
+        condition: service_started
+      oc-storage:
+        condition: service_started
+      oc-async:
+        condition: service_started
+    environment:
+      <<: *oc-env
+      OC_RUN_SERVICES: proxy,web,frontend,ocs,webdav,webfinger,sse
